@@ -315,28 +315,31 @@ def gcovWorker(data_q, metrics_q, args, chunk, gcov_filter_options):
     encoding = sys.stdout.encoding if sys.stdout.encoding else 'UTF-8'
     workdir  = args.cdirectory if args.cdirectory else "."
 
-    p = subprocess.Popen([gcov_bin] + gcov_args + chunk, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    for i, line in enumerate(iter(p.stdout.readline, b'')):
-        try:
-            intermediate_json = json.loads(line.decode(encoding))
-        except json.decoder.JSONDecodeError as e:
-            logging.error("Could not process chunk file '{}' ({}/{})".format(chunk[i], i+1, len(chunk)))
-            logging.error(str(e))
-            setExitCode("bad_chunk_file")
-            continue
+    for piece in chunks(chunk, args.maximum_chunk):
+        cmd = [gcov_bin] + gcov_args + piece
+        logging.debug("Starting gcov process: {}".format(' '.join(cmd)))
+        p = subprocess.Popen(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        for i, line in enumerate(iter(p.stdout.readline, b'')):
+            try:
+                intermediate_json = json.loads(line.decode(encoding))
+            except json.decoder.JSONDecodeError as e:
+                logging.error("Could not process chunk file '{}' ({}/{})".format(piece[i], i+1, len(piece)))
+                logging.error(str(e))
+                setExitCode("bad_chunk_file")
+                continue
 
-        if "current_working_directory" not in intermediate_json:
-            logging.error("Missing 'current_working_directory' for data file: {}".format(intermediate_json))
-            setExitCode("missing_json_key")
-            continue
+            if "current_working_directory" not in intermediate_json:
+                logging.error("Missing 'current_working_directory' for data file: {}".format(intermediate_json))
+                setExitCode("missing_json_key")
+                continue
 
-        intermediate_json_files = processGcovs(args.cdirectory, intermediate_json["files"], intermediate_json["current_working_directory"], gcov_filter_options)
-        for f in intermediate_json_files:
-            distillSource(f, base_report["sources"], args.test_name, args.xbranchcoverage)
-        gcovs_total   += len(intermediate_json["files"])
-        gcovs_skipped += len(intermediate_json["files"]) - len(intermediate_json_files)
+            intermediate_json_files = processGcovs(args.cdirectory, intermediate_json["files"], intermediate_json["current_working_directory"], gcov_filter_options)
+            for f in intermediate_json_files:
+                distillSource(f, base_report["sources"], args.test_name, args.xbranchcoverage)
+            gcovs_total   += len(intermediate_json["files"])
+            gcovs_skipped += len(intermediate_json["files"]) - len(intermediate_json_files)
 
-    p.wait()
+        p.wait()
     data_q.put(base_report)
     metrics_q.put((gcovs_total, gcovs_skipped))
 
@@ -971,6 +974,8 @@ def parseArgs():
     parser.add_argument('-j', '--jobs', dest='jobs', type=int, default=multiprocessing.cpu_count(), help='Number of parallel gcov to spawn (default: {}).'.format(multiprocessing.cpu_count()))
     parser.add_argument('-m', '--minimum-chunk-size', dest='minimum_chunk', type=int, default=5,    help='Minimum number of files a thread should process (default: 5). \
                                                                                                           If you have only 4 gcda files but they are monstrously huge, you could change this value to a 1 so that each thread will only process 1 gcda. Otherwise fastcov will spawn only 1 thread to process all of them.')
+    parser.add_argument('--maximum-chunk-size', dest='maximum_chunk', type=int, default=0, help='Maximum number of files that are processed in single gcov call, 0 for unlimited (default: 0). \
+                                                                                                 This does not change the maximum number of parallel jobs.')
 
     parser.add_argument('-F', '--fallback-encodings', dest='fallback_encodings', nargs="+", metavar='', default=[], help='List of encodings to try if opening a source file with the default fails (i.e. latin1, etc.). This option is not usually needed.')
 
